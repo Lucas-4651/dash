@@ -1,0 +1,17 @@
+{
+  "name": "dash",
+  "version": "1.0.0",
+  "description": "Projet de folie",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "body-parser": "^2.2.0",
+    "crypto": "^1.0.1",
+    "express": "^5.1.0"
+  }
+}
