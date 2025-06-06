@@ -1,0 +1,146 @@
+let currentAgentId = null;
+let agentsCache = [];
+
+async function fetchAgents() {
+    const res = await fetch('/agents');
+    const data = await res.json();
+    return data.agents || [];
+}
+
+async function fetchLogs(agentId) {
+    const res = await fetch(`/monitor/${agentId}`);
+    const data = await res.json();
+    return data.logs || [];
+}
+
+async function fetchExfiltration(agentId) {
+    const res = await fetch(`/monitor/${agentId}/exfiltrated`);
+    const data = await res.json();
+    return data.data || [];
+}
+
+async function fetchPendingCommands() {
+    let total = 0;
+    for (const agent of agentsCache) total += agent.commandCount || 0;
+    return total;
+}
+
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, s =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])
+    );
+}
+
+function renderAgentList(agents) {
+    const list = document.getElementById('agent-list');
+    list.innerHTML = '';
+    agents.forEach(agent => {
+        const div = document.createElement('div');
+        div.className = 'agent-card' + (agent.id === currentAgentId ? ' selected' : '');
+        div.innerHTML = `
+            <div><strong>${agent.id}</strong></div>
+            <div class="info">${agent.info.platform || '-'}</div>
+            <div class="info">Vu: ${new Date(agent.lastSeen).toLocaleTimeString()}</div>
+            <div class="agent-actions">
+                <button class="btn-exfil" data-agent="${agent.id}">Voir Exfiltration</button>
+            </div>
+        `;
+        div.onclick = e => {
+            if (e.target.classList.contains('btn-exfil')) return;
+            currentAgentId = agent.id;
+            document.querySelectorAll('.agent-card').forEach(c=>c.classList.remove('selected'));
+            div.classList.add('selected');
+            renderTabs();
+        };
+        div.querySelector('.btn-exfil').onclick = async e => {
+            e.stopPropagation();
+            currentAgentId = agent.id;
+            document.querySelectorAll('.agent-card').forEach(c=>c.classList.remove('selected'));
+            div.classList.add('selected');
+            showTab('exfil');
+            renderTabs();
+        };
+        list.appendChild(div);
+    });
+}
+
+function renderLogs(logs) {
+    const cont = document.getElementById('logs-container');
+    cont.innerHTML = '';
+    if (!logs.length) { cont.textContent = "Aucun log."; return; }
+    logs.slice(-25).reverse().forEach(log => {
+        const d = document.createElement('div');
+        d.className = 'log-entry';
+        d.innerHTML = `<span class="time">${new Date(log.time).toLocaleString()}</span><br>${escapeHtml(JSON.stringify(log.result, null, 1)).replace(/\n/g,'<br>')}`;
+        cont.appendChild(d);
+    });
+}
+
+function renderExfils(exfils) {
+    const cont = document.getElementById('exfil-container');
+    cont.innerHTML = '';
+    if (!exfils.length) { cont.textContent = "Aucune exfiltration."; return; }
+    exfils.slice(-15).reverse().forEach(entry => {
+        const d = document.createElement('div');
+        d.className = 'exfil-entry';
+        d.innerHTML = `
+            <div><b>Type:</b> ${escapeHtml(entry.type)}</div>
+            <div><b>Date:</b> <span class="time">${new Date(entry.timestamp).toLocaleString()}</span></div>
+            <div><b>Payload:</b> <span class="payload">${entry.data.payload ? escapeHtml(entry.data.payload).slice(0,350) + (entry.data.payload.length>350?' ...':'') : '-'}</span></div>
+            ${entry.data.endpoints ? `<b>Endpoints:</b><ul>${entry.data.endpoints.map(ep=>`<li>${escapeHtml(ep)}</li>`).join('')}</ul>` : ''}
+            ${Object.keys(entry.data).filter(k=>k!=='payload'&&k!=='endpoints').map(k=>`<b>${escapeHtml(k)}:</b> ${escapeHtml(JSON.stringify(entry.data[k]))}<br>`).join('')}
+        `;
+        cont.appendChild(d);
+    });
+}
+
+function setStats(agents, exfilCount, pendingCmds) {
+    document.getElementById('active-agents').textContent = agents.length;
+    document.getElementById('exfil-data').textContent = exfilCount;
+    document.getElementById('pending-commands').textContent = pendingCmds;
+}
+
+function showTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(cont => cont.style.display='none');
+    document.querySelector(`.tab-btn[data-tab="${tab}"]`).classList.add('active');
+    document.getElementById(tab+'-container').style.display = 'block';
+}
+
+function renderTabs() {
+    if (!currentAgentId) {
+        document.getElementById('logs-container').innerHTML = "Sélectionnez un agent.";
+        document.getElementById('exfil-container').innerHTML = "";
+        return;
+    }
+    const tab = document.querySelector('.tab-btn.active').dataset.tab;
+    if(tab === 'logs') {
+        fetchLogs(currentAgentId).then(renderLogs);
+    } else {
+        fetchExfiltration(currentAgentId).then(renderExfils);
+    }
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', async ()=>{
+    async function refreshAll() {
+        agentsCache = await fetchAgents();
+        renderAgentList(agentsCache);
+        let exfilTotal = 0;
+        for (const agent of agentsCache) {
+            const exfils = await fetchExfiltration(agent.id);
+            exfilTotal += exfils.length;
+        }
+        const pendingCmds = await fetchPendingCommands();
+        setStats(agentsCache, exfilTotal, pendingCmds);
+        renderTabs();
+    }
+    refreshAll();
+    setInterval(refreshAll, 9000);
+    document.querySelectorAll('.tab-btn').forEach(btn=>{
+        btn.onclick = ()=>{
+            showTab(btn.dataset.tab);
+            renderTabs();
+        };
+    });
+});

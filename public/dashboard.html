@@ -7,58 +7,31 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Quantum C2 Dashboard</h1>
-            <div class="stats">
-                <div class="stat-card">
-                    <h3>Agents Actifs</h3>
-                    <span id="active-agents">0</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Commandes En Attente</h3>
-                    <span id="pending-commands">0</span>
-                </div>
-                <div class="stat-card">
-                    <h3>Données Exfiltrées</h3>
-                    <span id="exfil-data">0</span>
-                </div>
+<div class="c2-container">
+    <header>
+        <h1><span class="ia-bubble">🤖</span> Quantum C2 Dashboard</h1>
+        <div class="stats">
+            <div><span id="active-agents">0</span><label>agents</label></div>
+            <div><span id="pending-commands">0</span><label>cmd en attente</label></div>
+            <div><span id="exfil-data">0</span><label>exfils</label></div>
+        </div>
+    </header>
+    <main>
+        <aside>
+            <h2>Agents</h2>
+            <div class="agent-list" id="agent-list"></div>
+        </aside>
+        <section class="right-pane">
+            <div class="ia-chatbox" id="ia-chatbox">
+                <div class="ia-messages" id="ia-messages"></div>
+                <form id="ia-form" autocomplete="off">
+                    <input type="text" id="ia-input" placeholder="Commande shell ou question à l’agent..." required>
+                    <button>Envoyer</button>
+                </form>
             </div>
-        </header>
-
-        <main>
-            <section class="agents-section">
-                <h2>Agents Connectés</h2>
-                <div class="agent-list" id="agent-list">
-                    <!-- Liste des agents dynamique -->
-                </div>
-            </section>
-
-            <section class="command-section">
-                <h2>Envoyer une Commande</h2>
-                <div class="command-form">
-                    <select id="agent-select" class="form-control">
-                        <option value="">Sélectionner un agent</option>
-                    </select>
-                    <input type="text" id="command-input" class="form-control" placeholder="Commande à exécuter...">
-                    <button id="send-command" class="btn">Envoyer</button>
-                </div>
-                
-                <div class="command-history">
-                    <h3>Historique des Commandes</h3>
-                    <ul id="command-history-list"></ul>
-                </div>
-            </section>
-
-            <section class="logs-section">
-                <h2>Logs de l'Agent</h2>
-                <div class="logs-container" id="logs-container">
-                    <!-- Logs dynamiques -->
-                </div>
-            </section>
-        </main>
-    </div>
-
-    <script src="script.js"></script>
+        </section>
+    </main>
+</div>
+<script src="script.js"></script>
 </body>
 </html>

